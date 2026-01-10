@@ -22,7 +22,7 @@ PAYMONGO_API_URL = "https://api.paymongo.com/v1/checkout_sessions"
 # ---- FASTAPI SETUP ----
 logger = logging.getLogger(__name__)
 router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="http://authservices-npr8.onrender.com/auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="https://authservices-npr8.onrender.com/auth/token")
 
 # ---- AUTH VALIDATOR ----
 async def validate_token_and_roles(token: str, allowed_roles: List[str]):
@@ -102,7 +102,7 @@ async def create_checkout_session(payload: CheckoutRequest, token: str = Depends
     await validate_token_and_roles(token, ["user", "admin", "staff"])
 
     # Fetch user profile for customer info
-    PROFILE_URL = "http://authservices-npr8.onrender.com/users/profile"
+    PROFILE_URL = "https://authservices-npr8.onrender.com/users/profile"
     customer_id = None
     name, email, phone = "User", "", ""
 
@@ -315,7 +315,7 @@ async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(o
                     "ordernotes": item.ordernotes
                 }
                 cart_response = await client.post(
-                    "http://ordering-service-8e9d.onrender.com/cart/",
+                    "https://ordering-service-8e9d.onrender.com/cart/",
                     json=cart_payload,
                     headers={"Authorization": f"Bearer {token}"}
                 )
@@ -323,7 +323,7 @@ async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(o
 
             # Step 2: Finalize order
             finalize_response = await client.post(
-                f"http://ordering-service-8e9d.onrender.com/cart/finalize?username={payload.username}",
+                f"https://ordering-service-8e9d.onrender.com/cart/finalize?username={payload.username}",
                 headers={"Authorization": f"Bearer {token}"}
             )
             if finalize_response.status_code == 404:
@@ -346,7 +346,7 @@ async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(o
                     "Notes": payload.delivery_info.Notes or payload.notes or ""
                 }
                 delivery_response = await client.post(
-                    "http://ordering-service-8e9d.onrender.com/delivery/info",
+                    "https://ordering-service-8e9d.onrender.com/delivery/info",
                     json=delivery_info_payload,
                     headers={"Authorization": f"Bearer {token}"}
                 )
@@ -363,7 +363,7 @@ async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(o
                 "reference_number": payload.reference_number
             }
             update_order_response = await client.put(
-                "http://ordering-service-8e9d.onrender.com/cart/update-payment",
+                "https://ordering-service-8e9d.onrender.com/cart/update-payment",
                 json=update_order_payload,
                 headers={"Authorization": f"Bearer {token}"}
             )
@@ -438,7 +438,7 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
             
             # Step 1: Finalize order in OOS (items already exist from calculate-promos)
             finalize_response = await client.post(
-                f"http://ordering-service-8e9d.onrender.com/cart/finalize?username={payload.username}",
+                f"https://ordering-service-8e9d.onrender.com/cart/finalize?username={payload.username}",
                 headers={"Authorization": f"Bearer {token}"}
             )
             if finalize_response.status_code == 404:
@@ -465,7 +465,7 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                     "Notes": payload.delivery_info.Notes or payload.notes or ""
                 }
                 delivery_response = await client.post(
-                    "http://ordering-service-8e9d.onrender.com/delivery/info",
+                    "https://ordering-service-8e9d.onrender.com/delivery/info",
                     json=delivery_info_payload,
                     headers={"Authorization": f"Bearer {token}"}
                 )
@@ -483,7 +483,7 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                 "total_discount": payload.total_discount or 0.0  # Include discount
             }
             update_order_response = await client.put(
-                "http://ordering-service-8e9d.onrender.com/cart/update-payment",
+                "https://ordering-service-8e9d.onrender.com/cart/update-payment",
                 json=update_order_payload,
                 headers={"Authorization": f"Bearer {token}"}
             )
@@ -527,7 +527,7 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
             # Save to POS - FIXED: Proper error handling
             try:
                 pos_response = await client.post(
-                    "http://sales-services.onrender.com/auth/purchase_orders/online-order",
+                    "https://sales-services.onrender.com/auth/purchase_orders/online-order",
                     json=pos_order_payload,
                     headers={"Authorization": f"Bearer {token}"}
                 )
