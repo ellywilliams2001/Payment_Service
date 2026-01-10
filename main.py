@@ -13,17 +13,17 @@ app.include_router(payment.router, prefix='/payment', tags=['payment'])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5000",  # OOS frontend
-        "http://192.168.100.14:5000",  # OOS LAN frontend
+        "http://bleu-oos-rouge.vercel.app",  # OOS frontend
+        "http://bleu-oos-rouge.vercel.app",  # OOS LAN frontend
 
-        "http://127.0.0.1:4000",  # Auth service
-        "http://localhost:4000",
+        "http://authservices-npr8.onrender.com",  # Auth service
+        "http://authservices-npr8.onrender.com",
 
-        "http://127.0.0.1:7004",  #ordering service
-        "http://localhost:7004",
+        "http://ordering-service-8e9d.onrender.com",  #ordering service
+        "http://ordering-service-8e9d.onrender.com",
 
-        "http://127.0.0.1:7005",  #ordering service
-        "http://localhost:7005",
+        "http://payment-service-nzo0.onrender.com",  #ordering service
+        "http://payment-service-nzo0.onrender.com",
 
  
     ],
