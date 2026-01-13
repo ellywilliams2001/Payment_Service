@@ -124,7 +124,9 @@ async def create_checkout_session(payload: CheckoutRequest, token: str = Depends
     customer_id = None
     name, email, phone = "User", "", ""
 
-    async with httpx.AsyncClient() as client:
+        # Use longer timeout for external service operations (30 seconds)
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             response = await client.get(PROFILE_URL, headers={"Authorization": f"Bearer {token}"})
             response.raise_for_status()
@@ -324,7 +326,9 @@ async def create_checkout_session(payload: CheckoutRequest, token: str = Depends
 async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(oauth2_scheme)):
     await validate_token_and_roles(token, ["user", "admin", "staff"])
 
-    async with httpx.AsyncClient() as client:
+    # Use longer timeout for ordering service operations (30 seconds)
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             # Step 1: Add cart items
             for item in payload.cart_items:
@@ -477,7 +481,9 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
     """
     await validate_token_and_roles(token, ["user", "admin", "staff"])
 
-    async with httpx.AsyncClient() as client:
+        # Use longer timeout for ordering service operations (30 seconds)
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             # Step 1: Try to finalize existing order first (from calculate-promos)
             # If it fails (404), then add items manually
@@ -662,6 +668,12 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                     detail=f"Order created in OOS but POS service error: {str(pos_error)}"
                 )
 
+            except httpx.ReadTimeout as e:
+                logger.error(f"Timeout error: The ordering service took too long to respond - {str(e)}")
+                raise HTTPException(
+                    status_code=504, 
+                    detail="The ordering service is taking too long to respond. Please try again or contact support if the issue persists."
+                )
         except httpx.HTTPStatusError as e:
             logger.error(f"Service error: {e.response.status_code} - {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail=f"Service error: {e.response.text}")
