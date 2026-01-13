@@ -479,17 +479,44 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
 
     async with httpx.AsyncClient() as client:
         try:
-            # NOTE: Items are already in the order from calculate-promos at checkout
-            # We don't need to re-add them. Just finalize and update payment details.
-            
-            # Step 1: Finalize order in OOS (items already exist from calculate-promos)
+            # Step 1: Try to finalize existing order first (from calculate-promos)
+            # If it fails (404), then add items manually
             finalize_response = await client.post(
                 f"https://ordering-service-8e9d.onrender.com/cart/finalize?username={payload.username}",
                 headers={"Authorization": f"Bearer {token}"}
             )
+            
             if finalize_response.status_code == 404:
-                logger.error(f"No pending order found for user {payload.username}")
-                raise HTTPException(status_code=404, detail=f"No pending order found for user {payload.username}")
+                # No pending order exists - need to add items first
+                logger.info(f"No pending order found for {payload.username}, adding items to cart...")
+                
+                # Add cart items one by one
+                for item in payload.cart_items:
+                    cart_payload = {
+                        "username": payload.username,
+                        "product_id": item.product_id,
+                        "product_name": item.product_name,
+                        "product_type": item.product_type,
+                        "product_category": item.product_category,
+                        "quantity": item.quantity,
+                        "price": item.price,
+                        "order_type": payload.order_type,
+                        "addons": item.addons,
+                        "ordernotes": item.ordernotes
+                    }
+                    cart_response = await client.post(
+                        "https://ordering-service-8e9d.onrender.com/cart/",
+                        json=cart_payload,
+                        headers={"Authorization": f"Bearer {token}"}
+                    )
+                    cart_response.raise_for_status()
+                
+                # Now finalize the order we just created
+                finalize_response = await client.post(
+                    f"https://ordering-service-8e9d.onrender.com/cart/finalize?username={payload.username}",
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+                
             finalize_response.raise_for_status()
             
             # Get the created order ID from finalize response
