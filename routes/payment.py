@@ -454,7 +454,7 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
     """
     await validate_token_and_roles(token, ["user", "admin", "staff"])
     
-    # 🚨 FIX: Reject empty carts immediately to prevent downstream errors and useless processing
+    # 🚨 FIX: Reject empty carts immediately
     if not payload.cart_items or len(payload.cart_items) == 0:
         logger.error(f"Empty cart received for user {payload.username} in confirm-payment-and-save-pos.")
         raise HTTPException(
@@ -464,22 +464,53 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
 
     async with httpx.AsyncClient() as client:
         try:
-            # NOTE: Items are already in the order from calculate-promos at checkout
-            # We don't need to re-add them. Just finalize and update payment details.
+            # ✅ FIXED: Add cart items BEFORE finalizing (they might not exist from calculate-promos)
+            logger.info(f"Adding {len(payload.cart_items)} items to cart for user {payload.username}")
             
-            # Step 1: Finalize order in OOS (items already exist from calculate-promos)
+            for item in payload.cart_items:
+                cart_payload = {
+                    "username": payload.username,
+                    "product_id": item.product_id,
+                    "product_name": item.product_name,
+                    "product_type": item.product_type,
+                    "product_category": item.product_category,
+                    "quantity": item.quantity,
+                    "price": item.price,
+                    "order_type": payload.order_type,
+                    "addons": item.addons,
+                    "ordernotes": item.ordernotes
+                }
+                
+                try:
+                    cart_response = await client.post(
+                        "https://ordering-service-8e9d.onrender.com/cart/",
+                        json=cart_payload,
+                        headers={"Authorization": f"Bearer {token}"}
+                    )
+                    cart_response.raise_for_status()
+                    logger.info(f"✅ Added item '{item.product_name}' to OOS cart")
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"Failed to add item '{item.product_name}' to cart: {e.response.status_code} - {e.response.text}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to add item '{item.product_name}' to cart"
+                    )
+            
+            # Step 1: Finalize order in OOS
+            logger.info(f"Finalizing order in OOS for user {payload.username}")
             finalize_response = await client.post(
                 f"https://ordering-service-8e9d.onrender.com/cart/finalize?username={payload.username}",
                 headers={"Authorization": f"Bearer {token}"}
             )
+            
             if finalize_response.status_code == 404:
                 logger.error(f"No pending order found for user {payload.username}")
                 raise HTTPException(status_code=404, detail=f"No pending order found for user {payload.username}")
-            finalize_response.raise_for_status()
             
-            # Get the created order ID from finalize response
+            finalize_response.raise_for_status()
             finalize_data = finalize_response.json()
             online_order_id = finalize_data.get("order_id")
+            logger.info(f"✅ Finalized OOS order with ID: {online_order_id}")
 
             # Step 2: Save delivery info if provided
             if payload.delivery_info:
@@ -495,12 +526,14 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                     "PhoneNumber": payload.delivery_info.PhoneNumber,
                     "Notes": payload.delivery_info.Notes or payload.notes or ""
                 }
+                
                 delivery_response = await client.post(
                     "https://ordering-service-8e9d.onrender.com/delivery/info",
                     json=delivery_info_payload,
                     headers={"Authorization": f"Bearer {token}"}
                 )
                 delivery_response.raise_for_status()
+                logger.info(f"✅ Saved delivery info for order {online_order_id}")
 
             # Step 3: Update order payment details in OOS
             update_order_payload = {
@@ -511,14 +544,16 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                 "total_amount": payload.total,
                 "delivery_notes": payload.notes or (payload.delivery_info.Notes if payload.delivery_info else ""),
                 "reference_number": payload.reference_number,
-                "total_discount": payload.total_discount or 0.0  # Include discount
+                "total_discount": payload.total_discount or 0.0
             }
+            
             update_order_response = await client.put(
                 "https://ordering-service-8e9d.onrender.com/cart/update-payment",
                 json=update_order_payload,
                 headers={"Authorization": f"Bearer {token}"}
             )
             update_order_response.raise_for_status()
+            logger.info(f"✅ Updated payment details for order {online_order_id}")
 
             # Step 4: Immediately save to POS as PENDING
             logger.info(f"=== SAVING ORDER TO POS AS PENDING ===")
@@ -530,16 +565,16 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
             if payload.delivery_info:
                 customer_name = f"{payload.delivery_info.FirstName} {payload.delivery_info.LastName}".strip()
             
-            # POS will generate its own SaleID, so we only send necessary data
+            # ✅ CRITICAL: Build POS payload with promotion data
             pos_order_payload = {
                 "customer_name": customer_name,
-                "cashier_name": "System",  # Will be updated when cashier accepts
+                "cashier_name": "System",
                 "order_type": payload.order_type,
                 "payment_method": payload.payment_method,
                 "subtotal": payload.subtotal,
-                "discount": payload.total_discount or 0.0,  # Include promo discount
+                "discount": payload.total_discount or 0.0,
                 "total_amount": payload.total,
-                "status": "pending",  # Save as PENDING initially
+                "status": "pending",
                 "reference_number": payload.reference_number,
                 "items": [
                     {
@@ -547,7 +582,17 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                         "quantity": item.quantity,
                         "price": item.price,
                         "category": item.product_category,
-                        "addons": item.addons or []
+                        "addons": [
+                            {
+                                "addon_id": addon.get("id", 0),
+                                "addon_name": addon.get("addon_name") or addon.get("AddOnName") or addon.get("name", "Unknown"),
+                                "price": float(addon.get("price", 0))
+                            }
+                            for addon in (item.addons or [])
+                        ],
+                        # ✅ CRITICAL: Include promo_name and discount for each item
+                        "promo_name": item.ordernotes if "promo:" in str(item.ordernotes or "").lower() else None,
+                        "discount": 0.0  # Individual item discount (if applicable)
                     }
                     for item in payload.cart_items
                 ]
@@ -555,19 +600,19 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
 
             logger.info(f"POS Payload: {json.dumps(pos_order_payload, indent=2)}")
 
-            # Save to POS - FIXED: Proper error handling
+            # Save to POS
             try:
                 pos_response = await client.post(
                     "https://sales-services.onrender.com/auth/purchase_orders/online-order",
                     json=pos_order_payload,
-                    headers={"Authorization": f"Bearer {token}"}
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=30.0  # Increase timeout for POS save
                 )
                 
-                # Check status code instead of .ok attribute
                 if pos_response.status_code not in [200, 201]:
                     error_text = pos_response.text
                     logger.error(f"Failed to save to POS: Status {pos_response.status_code} - {error_text}")
-                    # Capture the detail from the POS service's 500
+                    
                     try:
                         pos_error_detail = pos_response.json().get('detail', error_text)
                     except:
@@ -579,12 +624,13 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                     )
                 
                 pos_data = pos_response.json()
-                logger.info(f"✅ Successfully saved to POS as PENDING - SaleID: {pos_data.get('pos_sale_id')}")
+                pos_sale_id = pos_data.get('pos_sale_id')
+                logger.info(f"✅ Successfully saved to POS as PENDING - SaleID: {pos_sale_id}")
 
                 return {
                     "message": "Payment confirmed, order placed successfully, and saved to POS as PENDING",
                     "online_order_id": online_order_id,
-                    "pos_sale_id": pos_data.get("pos_sale_id"),
+                    "pos_sale_id": pos_sale_id,
                     "reference_number": payload.reference_number
                 }
                 
@@ -594,12 +640,17 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                     status_code=500,
                     detail=f"Order created in OOS but POS service error: {str(pos_error)}"
                 )
+            except httpx.TimeoutException:
+                logger.error(f"POS service timeout")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Order created in OOS but POS service timed out"
+                )
 
         except httpx.HTTPStatusError as e:
             logger.error(f"Service error: {e.response.status_code} - {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail=f"Service error: {e.response.text}")
         except HTTPException:
-            # Re-raise HTTPExceptions as-is
             raise
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}", exc_info=True)
