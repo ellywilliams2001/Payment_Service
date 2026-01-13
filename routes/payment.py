@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from typing import List, Optional
 import httpx
 import logging
@@ -67,6 +67,8 @@ class CartItem(BaseModel):
     price: float
     addons: Optional[List[dict]] = []
     ordernotes: Optional[str] = None
+    promo_name: Optional[str] = None
+    discount: Optional[float] = 0.0
 
 class DeliveryInfo(BaseModel):
     FirstName: str
@@ -404,6 +406,26 @@ async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(o
 class UpdatePOSStatusRequest(BaseModel):
     newStatus: str
 
+class POSItemRequest(BaseModel):
+    name: str
+    quantity: int
+    price: float
+    category: Optional[str] = None
+    promo_name: Optional[str] = None
+    discount: Optional[float] = 0.0
+    addons: Optional[List[dict]] = []
+
+class OnlineOrderRequest(BaseModel):
+    customer_name: str
+    cashier_name: str
+    order_type: str
+    payment_method: str
+    subtotal: float
+    total_amount: float
+    status: str
+    reference_number: Optional[str] = None
+    items: List[POSItemRequest]
+
 @router.patch("/auth/purchase_orders/online/{order_id}/status")
 async def update_pos_order_status(
     order_id: int,
@@ -523,27 +545,58 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                 customer_name = f"{payload.delivery_info.FirstName} {payload.delivery_info.LastName}".strip()
             
             # POS will generate its own SaleID, so we only send necessary data
+            # Normalize items with proper addon format and item-level discounts
+            normalized_items = []
+            for item in payload.cart_items:
+                # Normalize addons to ensure consistent format
+                normalized_addons = []
+                if item.addons:
+                    for addon in item.addons:
+                        if isinstance(addon, dict):
+                            # Extract addon_name and price from various possible keys
+                            addon_name = addon.get("addon_name") or addon.get("AddOnName") or addon.get("name") or "Addon"
+                            addon_price = addon.get("price") or addon.get("Price") or 0
+                            normalized_addons.append({
+                                "addon_name": addon_name,
+                                "price": addon_price
+                            })
+                        else:
+                            # If addon is a string or other type, convert to dict
+                            normalized_addons.append({
+                                "addon_name": str(addon),
+                                "price": 0
+                            })
+                
+                # Build item with ORIGINAL price and item-level discount
+                normalized_items.append({
+                    "name": item.product_name,
+                    "quantity": item.quantity,
+                    "price": item.price,  # ORIGINAL price, NOT discounted
+                    "category": item.product_category,
+                    "promo_name": item.promo_name,
+                    "discount": item.discount or 0.0,
+                    "addons": normalized_addons
+                })
+            
             pos_order_payload = {
                 "customer_name": customer_name,
                 "cashier_name": "System",  # Will be updated when cashier accepts
                 "order_type": payload.order_type,
                 "payment_method": payload.payment_method,
                 "subtotal": payload.subtotal,
-                "discount": payload.total_discount or 0.0,  # Include promo discount
                 "total_amount": payload.total,
                 "status": "pending",  # Save as PENDING initially
                 "reference_number": payload.reference_number,
-                "items": [
-                    {
-                        "name": item.product_name,
-                        "quantity": item.quantity,
-                        "price": item.price,
-                        "category": item.product_category,
-                        "addons": item.addons or []
-                    }
-                    for item in payload.cart_items
-                ]
+                "items": normalized_items
             }
+
+            # Validate POS payload before sending
+            try:
+                OnlineOrderRequest(**pos_order_payload)
+                logger.info("✅ POS payload validation passed")
+            except ValidationError as e:
+                logger.error(f"❌ Invalid POS payload: {e.json()}")
+                raise HTTPException(status_code=500, detail=f"Invalid POS payload: {e.errors()}")
 
             logger.info(f"POS Payload: {json.dumps(pos_order_payload, indent=2)}")
 
