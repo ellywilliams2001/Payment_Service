@@ -92,8 +92,6 @@ class ConfirmPaymentRequest(BaseModel):
     delivery_info: Optional[DeliveryInfo] = None
     reference_number: Optional[str] = None
     total_discount: Optional[float] = 0.0  # Add discount field
-class UpdatePOSStatusRequest(BaseModel):
-    newStatus: str
 
 # ---- CHECKOUT ENDPOINT ----
 @router.post("/create-checkout")
@@ -316,6 +314,8 @@ async def create_checkout_session(payload: CheckoutRequest, token: str = Depends
         logger.error(f"Unexpected error creating checkout: {str(e)}")
         raise HTTPException(status_code=500, detail="Unexpected server error.")
 
+
+
 # ---- CONFIRM PAYMENT ENDPOINT ----
 @router.post("/confirm-payment")
 async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(oauth2_scheme)):
@@ -335,7 +335,7 @@ async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(o
                     "price": item.price,
                     "order_type": payload.order_type,
                     "addons": item.addons,
-                    # "ordernotes": item.ordernotes
+                    "ordernotes": item.ordernotes
                 }
                 cart_response = await client.post(
                     "https://ordering-service-8e9d.onrender.com/cart/",
@@ -401,6 +401,9 @@ async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(o
             logger.error(f"Unexpected error confirming payment: {str(e)}")
             raise HTTPException(status_code=500, detail="Unexpected server error.")
 
+class UpdatePOSStatusRequest(BaseModel):
+    newStatus: str
+
 @router.patch("/auth/purchase_orders/online/{order_id}/status")
 async def update_pos_order_status(
     order_id: int,
@@ -441,6 +444,7 @@ async def update_pos_order_status(
     finally:
         await cursor.close()
         await conn.close()
+
 
 @router.post("/confirm-payment-and-save-pos")
 async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: str = Depends(oauth2_scheme)):
