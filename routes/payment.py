@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from typing import List, Optional
 import httpx
 import logging
@@ -67,8 +67,6 @@ class CartItem(BaseModel):
     price: float
     addons: Optional[List[dict]] = []
     ordernotes: Optional[str] = None
-    promo_name: Optional[str] = None
-    discount: Optional[float] = 0.0
 
 class DeliveryInfo(BaseModel):
     FirstName: str
@@ -124,9 +122,7 @@ async def create_checkout_session(payload: CheckoutRequest, token: str = Depends
     customer_id = None
     name, email, phone = "User", "", ""
 
-    # Use longer timeout for external service operations (30 seconds)
-    timeout = httpx.Timeout(30.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient() as client:
         try:
             response = await client.get(PROFILE_URL, headers={"Authorization": f"Bearer {token}"})
             response.raise_for_status()
@@ -145,8 +141,7 @@ async def create_checkout_session(payload: CheckoutRequest, token: str = Depends
                         "attributes": {
                             "name": name,
                             "email": email,
-                            "phone": phone,
-                            "default_device": "phone"  # Required by PayMongo API
+                            "phone": phone
                         }
                     }
                 }
@@ -326,9 +321,7 @@ async def create_checkout_session(payload: CheckoutRequest, token: str = Depends
 async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(oauth2_scheme)):
     await validate_token_and_roles(token, ["user", "admin", "staff"])
 
-    # Use longer timeout for ordering service operations (30 seconds)
-    timeout = httpx.Timeout(30.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient() as client:
         try:
             # Step 1: Add cart items
             for item in payload.cart_items:
@@ -411,26 +404,6 @@ async def confirm_payment(payload: ConfirmPaymentRequest, token: str = Depends(o
 class UpdatePOSStatusRequest(BaseModel):
     newStatus: str
 
-class POSItemRequest(BaseModel):
-    name: str
-    quantity: int
-    price: float
-    category: Optional[str] = None
-    promo_name: Optional[str] = None
-    discount: Optional[float] = 0.0
-    addons: Optional[List[dict]] = []
-
-class OnlineOrderRequest(BaseModel):
-    customer_name: str
-    cashier_name: str
-    order_type: str
-    payment_method: str
-    subtotal: float
-    total_amount: float
-    status: str
-    reference_number: Optional[str] = None
-    items: List[POSItemRequest]
-
 @router.patch("/auth/purchase_orders/online/{order_id}/status")
 async def update_pos_order_status(
     order_id: int,
@@ -481,48 +454,19 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
     """
     await validate_token_and_roles(token, ["user", "admin", "staff"])
 
-        # Use longer timeout for ordering service operations (30 seconds)
-        timeout = httpx.Timeout(30.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient() as client:
         try:
-            # Step 1: Try to finalize existing order first (from calculate-promos)
-            # If it fails (404), then add items manually
+            # NOTE: Items are already in the order from calculate-promos at checkout
+            # We don't need to re-add them. Just finalize and update payment details.
+            
+            # Step 1: Finalize order in OOS (items already exist from calculate-promos)
             finalize_response = await client.post(
                 f"https://ordering-service-8e9d.onrender.com/cart/finalize?username={payload.username}",
                 headers={"Authorization": f"Bearer {token}"}
             )
-            
             if finalize_response.status_code == 404:
-                # No pending order exists - need to add items first
-                logger.info(f"No pending order found for {payload.username}, adding items to cart...")
-                
-                # Add cart items one by one
-                for item in payload.cart_items:
-                    cart_payload = {
-                        "username": payload.username,
-                        "product_id": item.product_id,
-                        "product_name": item.product_name,
-                        "product_type": item.product_type,
-                        "product_category": item.product_category,
-                        "quantity": item.quantity,
-                        "price": item.price,
-                        "order_type": payload.order_type,
-                        "addons": item.addons,
-                        "ordernotes": item.ordernotes
-                    }
-                    cart_response = await client.post(
-                        "https://ordering-service-8e9d.onrender.com/cart/",
-                        json=cart_payload,
-                        headers={"Authorization": f"Bearer {token}"}
-                    )
-                    cart_response.raise_for_status()
-                
-                # Now finalize the order we just created
-                finalize_response = await client.post(
-                    f"https://ordering-service-8e9d.onrender.com/cart/finalize?username={payload.username}",
-                    headers={"Authorization": f"Bearer {token}"}
-                )
-                
+                logger.error(f"No pending order found for user {payload.username}")
+                raise HTTPException(status_code=404, detail=f"No pending order found for user {payload.username}")
             finalize_response.raise_for_status()
             
             # Get the created order ID from finalize response
@@ -579,58 +523,27 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                 customer_name = f"{payload.delivery_info.FirstName} {payload.delivery_info.LastName}".strip()
             
             # POS will generate its own SaleID, so we only send necessary data
-            # Normalize items with proper addon format and item-level discounts
-            normalized_items = []
-            for item in payload.cart_items:
-                # Normalize addons to ensure consistent format
-                normalized_addons = []
-                if item.addons:
-                    for addon in item.addons:
-                        if isinstance(addon, dict):
-                            # Extract addon_name and price from various possible keys
-                            addon_name = addon.get("addon_name") or addon.get("AddOnName") or addon.get("name") or "Addon"
-                            addon_price = addon.get("price") or addon.get("Price") or 0
-                            normalized_addons.append({
-                                "addon_name": addon_name,
-                                "price": addon_price
-                            })
-                        else:
-                            # If addon is a string or other type, convert to dict
-                            normalized_addons.append({
-                                "addon_name": str(addon),
-                                "price": 0
-                            })
-                
-                # Build item with ORIGINAL price and item-level discount
-                normalized_items.append({
-                    "name": item.product_name,
-                    "quantity": item.quantity,
-                    "price": item.price,  # ORIGINAL price, NOT discounted
-                    "category": item.product_category,
-                    "promo_name": item.promo_name,
-                    "discount": item.discount or 0.0,
-                    "addons": normalized_addons
-                })
-            
             pos_order_payload = {
                 "customer_name": customer_name,
                 "cashier_name": "System",  # Will be updated when cashier accepts
                 "order_type": payload.order_type,
                 "payment_method": payload.payment_method,
                 "subtotal": payload.subtotal,
+                "discount": payload.total_discount or 0.0,  # Include promo discount
                 "total_amount": payload.total,
                 "status": "pending",  # Save as PENDING initially
                 "reference_number": payload.reference_number,
-                "items": normalized_items
+                "items": [
+                    {
+                        "name": item.product_name,
+                        "quantity": item.quantity,
+                        "price": item.price,
+                        "category": item.product_category,
+                        "addons": item.addons or []
+                    }
+                    for item in payload.cart_items
+                ]
             }
-
-            # Validate POS payload before sending
-            try:
-                OnlineOrderRequest(**pos_order_payload)
-                logger.info("✅ POS payload validation passed")
-            except ValidationError as e:
-                logger.error(f"❌ Invalid POS payload: {e.json()}")
-                raise HTTPException(status_code=500, detail=f"Invalid POS payload: {e.errors()}")
 
             logger.info(f"POS Payload: {json.dumps(pos_order_payload, indent=2)}")
 
@@ -668,12 +581,6 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                     detail=f"Order created in OOS but POS service error: {str(pos_error)}"
                 )
 
-            except httpx.ReadTimeout as e:
-                logger.error(f"Timeout error: The ordering service took too long to respond - {str(e)}")
-                raise HTTPException(
-                    status_code=504, 
-                    detail="The ordering service is taking too long to respond. Please try again or contact support if the issue persists."
-                )
         except httpx.HTTPStatusError as e:
             logger.error(f"Service error: {e.response.status_code} - {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail=f"Service error: {e.response.text}")
