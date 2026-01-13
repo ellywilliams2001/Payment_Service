@@ -453,6 +453,14 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
     This way, when cashier accepts the order, they only need to update status and deduct inventory.
     """
     await validate_token_and_roles(token, ["user", "admin", "staff"])
+    
+    # 🚨 FIX: Reject empty carts immediately to prevent downstream errors and useless processing
+    if not payload.cart_items or len(payload.cart_items) == 0:
+        logger.error(f"Empty cart received for user {payload.username} in confirm-payment-and-save-pos.")
+        raise HTTPException(
+            status_code=400, 
+            detail="Order must contain at least one item."
+        )
 
     async with httpx.AsyncClient() as client:
         try:
@@ -559,9 +567,15 @@ async def confirm_payment_and_save_pos(payload: ConfirmPaymentRequest, token: st
                 if pos_response.status_code not in [200, 201]:
                     error_text = pos_response.text
                     logger.error(f"Failed to save to POS: Status {pos_response.status_code} - {error_text}")
+                    # Capture the detail from the POS service's 500
+                    try:
+                        pos_error_detail = pos_response.json().get('detail', error_text)
+                    except:
+                        pos_error_detail = error_text
+                        
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Order created in OOS but failed to save to POS: {error_text}"
+                        detail=f"Order created in OOS but failed to save to POS: {pos_error_detail}"
                     )
                 
                 pos_data = pos_response.json()
