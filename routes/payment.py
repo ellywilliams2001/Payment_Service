@@ -143,7 +143,8 @@ async def create_checkout_session(payload: CheckoutRequest, token: str = Depends
                         "attributes": {
                             "name": name,
                             "email": email,
-                            "phone": phone
+                            "phone": phone,
+                            "default_device": "phone"  # Required by PayMongo API
                         }
                     }
                 }
