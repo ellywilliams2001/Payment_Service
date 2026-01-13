@@ -124,9 +124,9 @@ async def create_checkout_session(payload: CheckoutRequest, token: str = Depends
     customer_id = None
     name, email, phone = "User", "", ""
 
-        # Use longer timeout for external service operations (30 seconds)
-        timeout = httpx.Timeout(30.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+    # Use longer timeout for external service operations (30 seconds)
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             response = await client.get(PROFILE_URL, headers={"Authorization": f"Bearer {token}"})
             response.raise_for_status()
